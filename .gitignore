@@ -40,5 +40,3 @@ nosetests.xml
 .idea
 
 # tmp files
-cookie.json
-sqlite3.db

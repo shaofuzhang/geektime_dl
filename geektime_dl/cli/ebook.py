@@ -1,148 +1,143 @@
 # coding=utf8
 
 import os
+import sys
 import json
 import datetime
-from geektime_dl.data_client import DataClient
+from geektime_dl.data_client import get_data_client
 from . import Command
-from ..geektime_ebook import maker
+from geektime_dl.utils.ebook import Render
 from kindle_maker import make_mobi
-from geektime_dl.utils.mail import MailServer
+from geektime_dl.utils.mail import send_to_kindle
 
 
 class EBook(Command):
     """将专栏文章制作成电子书
 
-    geektime ebook <course_id> [--out-dir=<out_dir>] [--enable-comments] [--comment-count=<comment_count>]
+    geektime ebook -c <course_id> [--output-folder=<output_folder>] [--enable-comments] [--comments-count=<comments_count>]
 
     `[]`表示可选，`<>`表示相应变量值
 
     course_id: 课程ID，可以从 query subcmd 查看
-    --out_dir: 电子书存放目录，默认当前目录
+    output_folder: 电子书存放目录，默认当前目录
     --enable-comments: 启动评论下载，默认不下载评论
-    --comment-count: 在启动评论下载时，设置评论条数，默认10条
+    comments_count: 在启动评论下载时，设置评论条数，默认10条
 
     notice: 此 subcmd 需要先执行 login subcmd
-    e.g.: geektime ebook 48 --out-dir=~/geektime-ebook
+    e.g.: geektime ebook 48 --output-folder=~/geektime-ebook
     """
 
     @staticmethod
     def _title(c):
+        """
+        课程文件名
+        """
         if not c['had_sub']:
             t = c['column_title'] + '[免费试读]'
-        elif c['update_frequency'] == '全集':
+        elif c['update_frequency'] == '全集' or c['is_finish']:
             t = c['column_title'] + '[更新完毕]'
         else:
             t = c['column_title'] + '[未完待续{}]'.format(datetime.date.today())
         return t
 
-    def render_column_source_files(self, course_intro, course_content, out_dir, force=False):
-
-        # TODO refactor here
-        # cover and introduction
-        course_intro = course_intro
+    def _render_source_files(self, course_intro: dict, course_content: list,
+                             out_dir: str, force: bool = False) -> None:
+        """
+        下载课程源文件
+        """
         articles = course_content
         column_title = course_intro['column_title']
+        _out_dir = os.path.join(out_dir, column_title)
+        if not os.path.isdir(_out_dir):
+            os.makedirs(_out_dir)
 
-        output_dir = os.path.join(out_dir, column_title)
-        if not os.path.isdir(output_dir):
-            os.makedirs(output_dir)
-            print('mkdir ' + output_dir)
-
-        if not force and os.path.isfile(os.path.join(output_dir, '{}.html'.format('简介'))):
-            print('简介' + ' exists')
+        render = Render(_out_dir)
+        # introduction
+        if not force and os.path.isfile(os.path.join(_out_dir, '简介.html')):
+            sys.stdout.write( '{}简介 exists\n'.format(column_title))
         else:
-            maker.render_article_html('简介', maker.parse_image(course_intro['column_intro'], output_dir), output_dir)
-            print('下载' + column_title + '简介' + ' done')
-        maker.generate_cover_img(course_intro['column_cover'], output_dir)
-        print('下载' + column_title + '封面' + ' done')
-
+            render.render_article_html('简介', course_intro['column_intro'])
+            sys.stdout.write('下载{}简介 done\n'.format(column_title))
+        # cover
+        if not force and os.path.isfile(os.path.join(_out_dir, 'cover.jpg')):
+            sys.stdout.write( '{}封面 exists\n'.format(column_title))
+        else:
+            render.generate_cover_img(course_intro['column_cover'])
+            sys.stdout.write('下载{}封面 done\n'.format(column_title))
+        # toc
         ebook_name = self._title(course_intro)
-        maker.render_toc_md(
-            ebook_name + '\n',
-            ['# 简介\n'] + ['# ' + maker.format_file_name(t['article_title']) + '\n' for t in articles],
-            output_dir
+        render.render_toc_md(
+            ebook_name,
+            ['简介'] + [render.format_file_name(t['article_title']) for t in articles]
         )
-        print('下载' + column_title + '目录' + ' done')
-
+        sys.stdout.write('下载{}目录 done\n'.format(column_title))
+        # articles
         for article in articles:
-
-            title = maker.format_file_name(article['article_title'])
-            if not force and os.path.isfile(os.path.join(output_dir, '{}.html'.format(title))):
-                print(title + ' exists')
+            title = render.format_file_name(article['article_title'])
+            if not force and os.path.isfile(os.path.join(_out_dir, '{}.html'.format(title))):
+                sys.stdout.write(title + ' exists\n')
                 continue
-            maker.render_article_html(title, maker.parse_image(article['article_content'], output_dir), output_dir)
-            print('下载' + column_title + '：' + article['article_title'] + ' done')
+            render.render_article_html(title, article['article_content'])
+            sys.stdout.write('下载{}:{} done\n'.format(column_title, title))
 
-    def run(self, args):
+    def run(self, cfg: dict) -> None:
 
-        course_id = args[0]
-        for arg in args[1:]:
-            if '--out-dir=' in arg:
-                out_dir = arg.split('--out-dir=')[1] or './ebook'
-                break
-        else:
-            out_dir = './ebook'
-
-        force = '--force' in args[1:]
-        enable_comments = '--enable-comments' in args[1:]
-        source_only = '--source-only' in args[1:]
-        push = '--push' in args[1:]
-
-        for arg in args[1:]:
-            if '--comment-count=' in arg:
-                comment_count = arg.split('--comment-count=')[1] or 10
-                break
-        else:
-            comment_count = 10
-
+        course_id = cfg['course_id']
+        if not course_id:
+            sys.stderr.write("ERROR: couldn't find the target course id\n")
+            return
+        out_dir = os.path.join(cfg['output_folder'], 'ebook')
+        out_dir = os.path.expanduser(out_dir)
         if not os.path.isdir(out_dir):
-            os.makedirs(out_dir)
+            try:
+                os.makedirs(out_dir)
+            except OSError:
+                sys.stderr.write("ERROR: couldn't create the output folder {}\n".format(out_dir))
+                return
+        try:
+            dc = get_data_client(cfg)
+        except:
+            sys.stderr.write("ERROR: invalid geektime account or password\n"
+                             "Use '%s login --help' for  help.\n" % sys.argv[0].split(os.path.sep)[-1])
+            return
 
-        dc = DataClient()
         course_data = dc.get_course_intro(course_id, force=True)
-
         if int(course_data['column_type']) not in (1, 2):
-            raise Exception('该课程不提供文本:%s' % course_data['column_title'])
+            sys.stderr.write("ERROR: 该课程不提供文本:%s" % course_data['column_title'])
+            return
 
         # data
-        data = dc.get_course_content(course_id, force=force)
-
-        if enable_comments:
+        sys.stdout.write('doing ......\n')
+        data = dc.get_course_content(course_id, force=cfg['force'])
+        if cfg['enable_comments']:
             for post in data:
-                post['article_content'] += self._render_comment_html(post['comments'], comment_count)
+                post['article_content'] += self._render_comment_html(post['comments'], cfg['comments_count'])
 
         # source file
-        course_data['column_title'] = maker.format_file_name(course_data['column_title'])
-        self.render_column_source_files(course_data, data, out_dir, force=force)
+        course_data['column_title'] = Render.format_file_name(course_data['column_title'])
+        self._render_source_files(course_data, data, out_dir, force=cfg['force'])
 
         # ebook
-        if not source_only:
-            if course_data['update_frequency'] == '全集' and os.path.isfile(os.path.join(out_dir, self._title(course_data)) + '.mobi'):
-                print("{} exists ".format(self._title(course_data)))
+        ebook_name = self._title(course_data)
+        if not cfg['source_only']:
+            if course_data['is_finish'] and os.path.isfile(os.path.join(out_dir, ebook_name) + '.mobi'):
+                sys.stdout.write("{} exists\n".format(ebook_name))
             else:
                 make_mobi(source_dir=os.path.join(out_dir, course_data['column_title']), output_dir=out_dir)
-        if push:
 
-            fn = os.path.join(out_dir, "{}.mobi".format(self._title(course_data)))
-            if os.path.getsize(fn) / 1024.0 / 1024 > 50:
-                print("电子书大小超过50M")
-                return
-            f = open(fn, 'rb')
-            d = f.read()
-            f.close()
+        # push to kindle
+        if cfg['push'] and not cfg['source_only']:
+            fn = os.path.join(out_dir, "{}.mobi".format(ebook_name))
+            try:
+                send_to_kindle(fn, cfg)
+                sys.stdout.write("push to kindle done\n")
+            except Exception as e:
+                sys.stderr.write("ERROR: push to kindle failed, e={}\n".format(e))
 
-            with open('smtp.conf') as f:
-                smtp_conf = json.loads(f.read())
-            m = MailServer(host=smtp_conf['host'], port=smtp_conf['port'], user=smtp_conf['user'], password=smtp_conf['password'], encryption=smtp_conf['encryption'])
-            message = m.build_email(email_to=smtp_conf['email_to'], subject='convert', body='', attachments=[("{}.mobi".format(self._title(course_data)), d)])
-            m.send_email(message)
-            print("push to kindle done")
-
-    def _timestamp2str(self, timestamp):
+    @staticmethod
+    def _timestamp2str(timestamp: int) -> str:
         if not timestamp:
             return ''
-
         return datetime.datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
 
     def _render(self, c):
@@ -154,7 +149,11 @@ class EBook(Command):
     <div style="color:#888;font-size:15.25px;font-weight:400;line-height:1.2">{}{}</div>
     <div style="color:#353535;font-weight:400;white-space:normal;word-break:break-all;line-height:1.6">{}</div>
 </div>
-            """.format(reply.get('user_name'), self._timestamp2str(reply.get('ctime')), reply.get('content')) if reply else ''
+            """.format(
+            reply.get('user_name'),
+            self._timestamp2str(reply.get('ctime')),
+            reply.get('content')
+        ) if reply else ''
 
         c_html = """
 <li>
@@ -168,12 +167,19 @@ class EBook(Command):
         {replies}
     </div>
 </li>
-            """.format(user_name=c['user_name'], like_count="[{}赞]".format(c['like_count']) if c['like_count'] else '',
-                       comment_content=c['comment_content'],
-                       comment_time=self._timestamp2str(c['comment_ctime']), replies=replies_html)
+            """.format(
+            user_name=c['user_name'],
+            like_count="[{}赞]".format(c['like_count']) if c['like_count'] else '',
+            comment_content=c['comment_content'],
+            comment_time=self._timestamp2str(c['comment_ctime']),
+            replies=replies_html
+        )
         return c_html
 
     def _render_comment_html(self, comments, comment_count):
+        """
+        生成评论的 html 文本
+        """
         if not comments:
             return ''
 
@@ -195,28 +201,32 @@ class EbookBatch(EBook):
     """批量制作电子书
     懒， 不想写参数了
     """
-    def run(self, args):
-        if '--all' in args:
-            dc = DataClient()
-            data = dc.get_course_list()
+    def run(self, cfg: dict):
+        cid_list = []
+        if cfg['all']:
+            try:
+                dc = get_data_client(cfg)
+            except:
+                sys.stderr.write("ERROR: invalid geektime account or password\n"
+                                 "Use '{} login --help' for  help.\n".format(
+                    sys.argv[0].split(os.path.sep)[-1]))
+                return
 
+            data = dc.get_course_list()
             for c in data['1']['list'] + data['2']['list']:
-                if not c['had_sub']:
-                    continue
-                if c['update_frequency'] == '全集':
-                    super(EbookBatch, self).run([str(c['id'])] + args)
-                    print('\n')
-                else:
-                    super(EbookBatch, self).run([str(c['id']), '--source-only'] + args)
-                    print('\n')
+                if c['had_sub'] and (c['update_frequency'] == '全集' or c['is_finish']):
+                    cid_list.append(c['id'])
+
 
         else:
-            course_ids = args[0]
-            cid_list = course_ids.split(',')
+            course_ids = cfg['course_ids']
+            cid_list.extend(course_ids.split(','))
 
-            for cid in cid_list:
-                super(EbookBatch, self).run([cid.strip()] + args)
-                print('\n')
+        for cid in cid_list:
+            args = cfg.copy()
+            args['course_id'] = int(cid)
+            super().run(args)
+            sys.stderr.write('\n')
 
 
 
