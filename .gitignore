@@ -35,8 +35,13 @@ nosetests.xml
 # Virtual environment
 .venv
 .venv3
+env
 
 # Environment files
 .idea
+.vscode
 
 # tmp files
+ebook
+geektime.cfg
+geektime-localstorage.json

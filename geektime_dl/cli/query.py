@@ -30,13 +30,14 @@ class Query(Command):
             result_str += {'1': '专栏', '2': '微课', '3': '视频', '4': '其他'}[i] + '\n'
             result_str += "\t{:<12}{}\t{}\t{:<10}\n".format('课程ID', '已订阅', '已完结', '课程标题')
             for c in columns:
-                result_str += "\t{:<15}{}\t{}\t{:<10}\n".format(
-                    str(c['id']),
-                    '是' if c['had_sub'] else '否',
-                    '是' if (c['update_frequency'] == '全集' or c['is_finish']) else '否',
-                    c['column_title'],
+                if c['had_sub']:
+                    result_str += "\t{:<15}{}\t{}\t{:<10}\n".format(
+                        str(c['id']),
+                        '是' if c['had_sub'] else '否',
+                        '是' if (c['update_frequency'] == '全集' or c['is_finish']) else '否',
+                        c['column_title'],
 
-                )
+                    )
 
         sys.stdout.write(result_str)
 
