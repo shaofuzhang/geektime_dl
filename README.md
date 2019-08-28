@@ -253,6 +253,8 @@ docker run -v `pwd`:/output --rm geektime mp3batch --all --url-only
 - [X] push to kindle
 - [ ] support mathjax
 - [ ] query support search parameter
+- [ ] support convert to PDF
+- [ ] support split file to mobi
 - [ ] ...
 
 
